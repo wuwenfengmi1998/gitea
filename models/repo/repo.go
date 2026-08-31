@@ -11,7 +11,6 @@ import (
 	"maps"
 	"net"
 	"net/url"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -20,7 +19,6 @@ import (
 	"gitea.dev/models/db"
 	"gitea.dev/models/unit"
 	user_model "gitea.dev/models/user"
-	"gitea.dev/modules/base"
 	"gitea.dev/modules/git"
 	giturl "gitea.dev/modules/git/url"
 	"gitea.dev/modules/htmlutil"
@@ -226,22 +224,6 @@ func init() {
 	db.RegisterModel(new(Repository))
 }
 
-func RelativePath(ownerName, repoName string) string {
-	return strings.ToLower(ownerName) + "/" + strings.ToLower(repoName) + ".git"
-}
-
-// RelativePath should be an unix style path like username/reponame.git
-func (repo *Repository) RelativePath() string {
-	return RelativePath(repo.OwnerName, repo.Name)
-}
-
-type StorageRepo string
-
-// RelativePath should be an unix style path like username/reponame.git
-func (sr StorageRepo) RelativePath() string {
-	return string(sr)
-}
-
 // SanitizedOriginalURL returns a sanitized OriginalURL
 func (repo *Repository) SanitizedOriginalURL() string {
 	if repo.OriginalURL == "" {
@@ -282,7 +264,7 @@ func (repo *Repository) SizeDetailsString() string {
 	var str strings.Builder
 	sizeDetails := repo.SizeDetails()
 	for _, detail := range sizeDetails {
-		fmt.Fprintf(&str, "%s: %s, ", detail.Name, base.FileSize(detail.Size))
+		fmt.Fprintf(&str, "%s: %s, ", detail.Name, util.FormatByteSize(detail.Size))
 	}
 	return strings.TrimSuffix(str.String(), ", ")
 }
@@ -380,17 +362,6 @@ func (repo *Repository) CommitLink(commitID string) (result string) {
 func (repo *Repository) APIURL(ctxOpt ...context.Context) string {
 	ctx := util.OptionalArg(ctxOpt, context.TODO())
 	return httplib.MakeAbsoluteURL(ctx, setting.AppSubURL+"/api/v1/repos/"+url.PathEscape(repo.OwnerName)+"/"+url.PathEscape(repo.Name))
-}
-
-// GetCommitsCountCacheKey returns cache key used for commits count caching.
-func (repo *Repository) GetCommitsCountCacheKey(contextName string, isRef bool) string {
-	var prefix string
-	if isRef {
-		prefix = "ref"
-	} else {
-		prefix = "commit"
-	}
-	return fmt.Sprintf("commits-count-%d-%s-%s", repo.ID, prefix, contextName)
 }
 
 // LoadUnits loads repo units into repo.Units
@@ -580,16 +551,6 @@ func (repo *Repository) IsGenerated() bool {
 	return repo.TemplateID != 0
 }
 
-// RepoPath returns repository path by given user and repository name.
-func RepoPath(userName, repoName string) string { //revive:disable-line:exported
-	return filepath.Join(setting.RepoRootPath, filepath.Clean(strings.ToLower(userName)), filepath.Clean(strings.ToLower(repoName)+".git"))
-}
-
-// RepoPath returns the repository path
-func (repo *Repository) RepoPath() string {
-	return RepoPath(repo.OwnerName, repo.Name)
-}
-
 // Link returns the repository relative url
 func (repo *Repository) Link() string {
 	return setting.AppSubURL + "/" + url.PathEscape(repo.OwnerName) + "/" + url.PathEscape(repo.Name)
@@ -614,30 +575,18 @@ func (repo *Repository) IsOwnedBy(userID int64) bool {
 	return repo.OwnerID == userID
 }
 
-// CanCreateBranch returns true if repository meets the requirements for creating new branches.
-func (repo *Repository) CanCreateBranch() bool {
-	return !repo.IsMirror
-}
-
 // CanEnablePulls returns true if repository meets the requirements of accepting pulls.
 func (repo *Repository) CanEnablePulls() bool {
-	return !repo.IsMirror && !repo.IsEmpty
+	return repo.CanContentChange() && !repo.IsEmpty
+}
+
+func (repo *Repository) CanContentChange() bool {
+	return !repo.IsMirror && !repo.IsArchived
 }
 
 // AllowsPulls returns true if repository meets the requirements of accepting pulls and has them enabled.
 func (repo *Repository) AllowsPulls(ctx context.Context) bool {
 	return repo.CanEnablePulls() && repo.UnitEnabled(ctx, unit.TypePullRequests)
-}
-
-// CanEnableEditor returns true if repository meets the requirements of web editor.
-// FIXME: most CanEnableEditor calls should be replaced with CanContentChange
-// And all other like CanCreateBranch / CanEnablePulls should also be updated
-func (repo *Repository) CanEnableEditor() bool {
-	return repo.CanContentChange()
-}
-
-func (repo *Repository) CanContentChange() bool {
-	return !repo.IsMirror && !repo.IsArchived
 }
 
 // DescriptionHTML does special handles to description and return HTML string.
@@ -647,6 +596,10 @@ func (repo *Repository) DescriptionHTML(ctx context.Context) template.HTML {
 
 // CloneLink represents different types of clone URLs of repository.
 type CloneLink struct {
+	IsWikiRepo   bool
+	SupportSSH   bool
+	SupportHTTPS bool
+
 	SSH   string
 	HTTPS string
 	Tea   string
@@ -698,9 +651,12 @@ func ComposeTeaCloneCommand(ctx context.Context, owner, repo string) string {
 
 func (repo *Repository) cloneLink(ctx context.Context, doer *user_model.User, repoPathName string) *CloneLink {
 	return &CloneLink{
-		SSH:   ComposeSSHCloneURL(doer, repo.OwnerName, repoPathName),
-		HTTPS: ComposeHTTPSCloneURL(ctx, repo.OwnerName, repoPathName),
-		Tea:   ComposeTeaCloneCommand(ctx, repo.OwnerName, repoPathName),
+		IsWikiRepo:   strings.HasSuffix(repoPathName, ".wiki"),
+		SupportHTTPS: !setting.Repository.DisableHTTPGit,
+		SupportSSH:   !setting.SSH.Disabled && (doer != nil || setting.SSH.ExposeAnonymous),
+		SSH:          ComposeSSHCloneURL(doer, repo.OwnerName, repoPathName),
+		HTTPS:        ComposeHTTPSCloneURL(ctx, repo.OwnerName, repoPathName),
+		Tea:          ComposeTeaCloneCommand(ctx, repo.OwnerName, repoPathName),
 	}
 }
 

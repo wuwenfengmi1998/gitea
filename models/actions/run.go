@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
-	"strings"
+	"strconv"
 	"time"
 
 	"gitea.dev/models/db"
@@ -92,6 +92,13 @@ func (run *ActionRun) Link() string {
 	return fmt.Sprintf("%s/actions/runs/%d", run.Repo.Link(), run.ID)
 }
 
+func (run *ActionRun) APIURL(ctx context.Context) string {
+	if run.Repo == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s/actions/runs/%d", run.Repo.APIURL(ctx), run.ID)
+}
+
 func (run *ActionRun) WorkflowLink() string {
 	if run.Repo == nil {
 		return ""
@@ -116,12 +123,14 @@ func (run *ActionRun) RefLink() string {
 func (run *ActionRun) PrettyRef() string {
 	refName := git.RefName(run.Ref)
 	if refName.IsPull() {
-		return "#" + strings.TrimSuffix(strings.TrimPrefix(run.Ref, git.PullPrefix), "/head")
+		if pullIndex, ok := refName.PullIndex(); ok {
+			return "#" + strconv.FormatInt(pullIndex, 10)
+		}
 	}
 	return refName.ShortName()
 }
 
-// RefTooltip return a tooltop of run's ref. For pull request, it's the title of the PR, otherwise it's the ShortName.
+// RefTooltip return a tooltip of run's ref. For pull request, it's the title of the PR, otherwise it's the ShortName.
 func (run *ActionRun) RefTooltip() string {
 	payload, err := run.GetPullRequestEventPayload()
 	if err == nil && payload != nil && payload.PullRequest != nil {
@@ -277,6 +286,12 @@ func GetRunByRepoAndID(ctx context.Context, repoID, runID int64) (*ActionRun, er
 	return &run, nil
 }
 
+func GetRunsByRepoAndID(ctx context.Context, repoID int64, runIDs []int64) ([]*ActionRun, error) {
+	var runs []*ActionRun
+	err := db.GetEngine(ctx).In("id", runIDs).Where("repo_id=?", repoID).Find(&runs)
+	return runs, err
+}
+
 func GetRunByRepoAndIndex(ctx context.Context, repoID, runIndex int64) (*ActionRun, error) {
 	run, has, err := db.Get[ActionRun](ctx, builder.Eq{"repo_id": repoID, "`index`": runIndex})
 	if err != nil {
@@ -391,5 +406,5 @@ func CancelPreviousJobsByRunConcurrency(ctx context.Context, attempt *ActionRunA
 		jobsToCancel = append(jobsToCancel, jobs...)
 	}
 
-	return CancelJobs(ctx, jobsToCancel)
+	return CancelJobs(ctx, jobsToCancel, false)
 }

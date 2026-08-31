@@ -11,7 +11,8 @@ import (
 	"gitea.dev/models/db"
 	repo_model "gitea.dev/models/repo"
 	user_model "gitea.dev/models/user"
-	"gitea.dev/modules/gitrepo"
+	"gitea.dev/modules/git"
+	"gitea.dev/modules/git/gitrepo"
 	"gitea.dev/modules/log"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/templates"
@@ -82,8 +83,7 @@ func UnadoptedRepos(ctx *context.Context) {
 	q := ctx.FormString("q")
 
 	if !doSearch {
-		pager := context.NewPagination(0, opts.PageSize, opts.Page, 5)
-		pager.AddParamFromRequest(ctx.Req)
+		pager := context.NewPagerBuilder(ctx).TotalCount(0).PerPageLimit(opts.PageSize).CurPage(opts.Page).Build()
 		ctx.Data["Page"] = pager
 		ctx.HTML(http.StatusOK, tplUnadoptedRepos)
 		return
@@ -96,8 +96,7 @@ func UnadoptedRepos(ctx *context.Context) {
 		return
 	}
 	ctx.Data["Dirs"] = repoNames
-	pager := context.NewPagination(count, opts.PageSize, opts.Page, 5)
-	pager.AddParamFromRequest(ctx.Req)
+	pager := context.NewPagerBuilder(ctx).TotalCount(count).PerPageLimit(opts.PageSize).CurPage(opts.Page).Build()
 	ctx.Data["Page"] = pager
 	ctx.HTML(http.StatusOK, tplUnadoptedRepos)
 }
@@ -134,7 +133,7 @@ func AdoptOrDeleteRepository(ctx *context.Context) {
 		ctx.ServerError("IsRepositoryExist", err)
 		return
 	}
-	exist, err := gitrepo.IsRepositoryExist(ctx, repo_model.StorageRepo(repo_model.RelativePath(ctxUser.Name, repoName)))
+	exist, err := git.IsRepositoryExist(ctx, gitrepo.CodeRepoByName(ctxUser.Name, repoName))
 	if err != nil {
 		ctx.ServerError("IsDir", err)
 		return

@@ -18,9 +18,10 @@ import (
 	user_model "gitea.dev/models/user"
 	"gitea.dev/modules/cache"
 	"gitea.dev/modules/git"
-	"gitea.dev/modules/gitrepo"
 	"gitea.dev/modules/httpcache"
 	"gitea.dev/modules/log"
+	"gitea.dev/modules/paginator"
+	"gitea.dev/modules/reqctx"
 	"gitea.dev/modules/setting"
 	"gitea.dev/modules/util"
 	"gitea.dev/modules/web"
@@ -49,14 +50,15 @@ type APIContext struct {
 }
 
 // TokenCanAccessRepo reports whether the current API token is allowed to access the repository.
-// A public-only token cannot reach a private repo; any other token is unrestricted by this check.
+// A public-only token cannot reach a private repo or a repo owned by a non-public (limited or
+// private) owner; any other token is unrestricted by this check.
 func (ctx *APIContext) TokenCanAccessRepo(repo *repo_model.Repository) bool {
-	return repo == nil || !ctx.PublicOnly || !repo.IsPrivate
+	return !ctx.PublicOnly || !publicOnlyTokenDeniedRepo(ctx, repo)
 }
 
 func init() {
 	web.RegisterResponseStatusProvider[*APIContext](func(req *http.Request) web_types.ResponseStatusProvider {
-		return req.Context().Value(apiContextKey).(*APIContext)
+		return GetAPIContext(req)
 	})
 }
 
@@ -96,6 +98,12 @@ type APIForbiddenError struct {
 	APIError
 }
 
+// APIUnauthorizedError is an unauthorized error response
+// swagger:response unauthorized
+type APIUnauthorizedError struct {
+	APIError
+}
+
 // APINotFound is a not found empty response
 // swagger:response notFound
 type APINotFound struct{}
@@ -103,10 +111,6 @@ type APINotFound struct{}
 // APIConflict is a conflict empty response
 // swagger:response conflict
 type APIConflict struct{}
-
-// APIRedirect is a redirect response
-// swagger:response redirect
-type APIRedirect struct{}
 
 // APIString is a string response
 // swagger:response string
@@ -189,31 +193,30 @@ var apiContextKey = apiContextKeyType{}
 
 // GetAPIContext returns a context for API routes
 func GetAPIContext(req *http.Request) *APIContext {
-	return req.Context().Value(apiContextKey).(*APIContext)
+	return reqctx.MustContextValue[*APIContext](req.Context(), apiContextKey)
 }
 
 func genAPILinks(curURL *url.URL, total int64, pageSize, curPage int) []string {
-	page := NewPagination(total, pageSize, curPage, 0)
-	paginater := page.Paginater
+	p := paginator.New(int(total), pageSize, curPage, 0)
 	links := make([]string, 0, 4)
 
-	if paginater.HasNext() {
+	if p.HasNext() {
 		u := *curURL
 		queries := u.Query()
-		queries.Set("page", strconv.Itoa(paginater.Next()))
+		queries.Set("page", strconv.Itoa(p.Next()))
 		u.RawQuery = queries.Encode()
 
 		links = append(links, fmt.Sprintf("<%s%s>; rel=\"next\"", setting.AppURL, u.RequestURI()[1:]))
 	}
-	if !paginater.IsLast() {
+	if !p.IsLast() {
 		u := *curURL
 		queries := u.Query()
-		queries.Set("page", strconv.Itoa(paginater.TotalPages()))
+		queries.Set("page", strconv.Itoa(p.TotalPages()))
 		u.RawQuery = queries.Encode()
 
 		links = append(links, fmt.Sprintf("<%s%s>; rel=\"last\"", setting.AppURL, u.RequestURI()[1:]))
 	}
-	if !paginater.IsFirst() {
+	if !p.IsFirst() {
 		u := *curURL
 		queries := u.Query()
 		queries.Set("page", "1")
@@ -221,10 +224,10 @@ func genAPILinks(curURL *url.URL, total int64, pageSize, curPage int) []string {
 
 		links = append(links, fmt.Sprintf("<%s%s>; rel=\"first\"", setting.AppURL, u.RequestURI()[1:]))
 	}
-	if paginater.HasPrevious() {
+	if p.HasPrevious() {
 		u := *curURL
 		queries := u.Query()
-		queries.Set("page", strconv.Itoa(paginater.Previous()))
+		queries.Set("page", strconv.Itoa(p.Previous()))
 		u.RawQuery = queries.Encode()
 
 		links = append(links, fmt.Sprintf("<%s%s>; rel=\"prev\"", setting.AppURL, u.RequestURI()[1:]))
@@ -282,7 +285,7 @@ func ReferencesGitRepo(allowEmpty ...bool) func(ctx *APIContext) {
 		// For API calls.
 		if ctx.Repo.GitRepo == nil {
 			var err error
-			ctx.Repo.GitRepo, err = gitrepo.RepositoryFromRequestContextOrOpen(ctx, ctx.Repo.Repository)
+			ctx.Repo.GitRepo, err = git.RepositoryFromRequestContextOrOpen(ctx, ctx.Repo.Repository)
 			if err != nil {
 				ctx.APIErrorInternal(err)
 				return
@@ -309,11 +312,11 @@ func RepoRefForAPI(next http.Handler) http.Handler {
 		var err error
 		switch refType {
 		case git.RefTypeBranch:
-			ctx.Repo.Commit, err = ctx.Repo.GitRepo.GetBranchCommit(refName)
+			ctx.Repo.Commit, err = ctx.Repo.GitRepo.GetBranchCommit(ctx, refName)
 		case git.RefTypeTag:
-			ctx.Repo.Commit, err = ctx.Repo.GitRepo.GetTagCommit(refName)
+			ctx.Repo.Commit, err = ctx.Repo.GitRepo.GetTagCommit(ctx, refName)
 		case git.RefTypeCommit:
-			ctx.Repo.Commit, err = ctx.Repo.GitRepo.GetCommit(refName)
+			ctx.Repo.Commit, err = ctx.Repo.GitRepo.GetCommit(ctx, refName)
 		}
 		if ctx.Repo.Commit == nil || errors.Is(err, util.ErrNotExist) {
 			ctx.APIErrorNotFound("unable to find a git ref")

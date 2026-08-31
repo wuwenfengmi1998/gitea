@@ -62,12 +62,13 @@ func TestMain(m *testing.M) {
 }
 
 func newTestRenderUtils(t *testing.T) *RenderUtils {
-	ctx := reqctx.NewRequestContextForTest(t.Context())
+	ctx := reqctx.NewRequestContextForTest(t)
 	ctx.SetContextValue(translation.ContextKey, &translation.MockLocale{})
 	return NewRenderUtils(ctx)
 }
 
 func TestRenderRepoComment(t *testing.T) {
+	defer test.MockVariableValue(&setting.RepoRootPath, t.TempDir())()
 	mockRepo := &repo.Repository{
 		ID: 1, OwnerName: "user13", Name: "repo11",
 		Owner: &user_model.User{ID: 13, Name: "user13"},
